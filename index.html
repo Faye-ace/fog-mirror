@@ -1,0 +1,515 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>fog</title>
+<style>
+  :root { color-scheme: dark; --ink:#f5f1eb; --muted:rgba(245,241,235,.62); }
+  * { box-sizing:border-box; }
+  html,body { margin:0; width:100%; height:100%; overflow:hidden; background:#11110f; color:var(--ink); font-family:Inter,ui-sans-serif,system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif; }
+  #stage { position:fixed; inset:0; background:#11110f; }
+  canvas { position:absolute; inset:0; width:100%; height:100%; display:block; }
+  #cameraLayer { z-index:1; }
+  #frostLayer { z-index:2; pointer-events:none; }
+  #video { display:none; }
+  #startScreen { position:absolute; inset:0; z-index:10; display:grid; place-items:center; padding:28px; background:radial-gradient(ellipse at 50% 42%,#33312d 0%,#1a1917 42%,#10100f 100%); }
+  .intro { width:min(440px,100%); text-align:center; }
+  .eyebrow { font-size:10px; letter-spacing:.28em; text-transform:uppercase; color:rgba(245,241,235,.48); margin-bottom:24px; }
+  h1 { margin:0; font-family:Georgia,"Times New Roman",serif; font-weight:400; font-size:clamp(68px,13vw,112px); letter-spacing:-.075em; line-height:.9; }
+  .subtitle { margin:24px auto 34px; max-width:300px; color:rgba(245,241,235,.68); font-size:13px; line-height:1.7; }
+  #startButton { appearance:none; border:1px solid rgba(255,255,255,.65); border-radius:999px; padding:14px 28px; color:#191816; background:#f3efe8; font-size:11px; letter-spacing:.16em; text-transform:uppercase; cursor:pointer; transition:transform .2s,background .2s; }
+  #startButton:hover { transform:translateY(-2px); background:#fff; }
+  #privacy { margin:18px auto 0; color:rgba(245,241,235,.42); font-size:10px; line-height:1.6; letter-spacing:.04em; }
+  #status { margin:18px auto 0; min-height:18px; color:#f0c8b9; font-size:12px; line-height:1.5; }
+  #controls { position:absolute; z-index:5; inset:0; pointer-events:none; display:none; }
+  #brushControl { pointer-events:auto; position:absolute; left:22px; bottom:22px; display:flex; align-items:center; gap:13px; height:46px; padding:0 16px; border:1px solid rgba(255,255,255,.27); border-radius:999px; background:rgba(236,233,226,.13); backdrop-filter:blur(18px); -webkit-backdrop-filter:blur(18px); box-shadow:0 5px 28px rgba(0,0,0,.12); }
+  #brushControl label { color:rgba(255,255,255,.88); font-size:11px; letter-spacing:.04em; text-transform:lowercase; }
+  #brushSize { appearance:none; width:112px; height:2px; margin:0; background:rgba(255,255,255,.4); outline:none; cursor:pointer; accent-color:#fff; }
+  #brushSize::-webkit-slider-thumb { appearance:none; width:12px; height:12px; border-radius:50%; background:#fff; border:1px solid rgba(0,0,0,.12); box-shadow:0 0 10px rgba(255,255,255,.5); }
+  #brushSize::-moz-range-thumb { width:12px; height:12px; border:0; border-radius:50%; background:#fff; box-shadow:0 0 10px rgba(255,255,255,.5); }
+  #shutter { pointer-events:auto; position:absolute; right:23px; bottom:22px; width:46px; height:46px; border:1px solid rgba(255,255,255,.45); border-radius:50%; color:white; background:rgba(236,233,226,.14); backdrop-filter:blur(18px); cursor:pointer; display:grid; place-items:center; }
+  #shutter:hover { background:rgba(255,255,255,.28); }
+  #shutter svg { width:19px; height:19px; }
+  #hint { position:absolute; left:50%; bottom:32px; transform:translateX(-50%); color:rgba(255,255,255,.48); font-size:10px; letter-spacing:.08em; white-space:nowrap; pointer-events:none; }
+  #controls:has(#brushControl) #hint { bottom:84px; }
+  @media(max-width:600px) { #brushControl{left:12px;bottom:14px;gap:9px;padding:0 12px} #brushSize{width:82px} #shutter{right:12px;bottom:14px} #hint{display:none} }
+</style>
+</head>
+<body>
+<div id="stage">
+  <video id="video" playsinline muted></video>
+  <canvas id="cameraLayer"></canvas>
+  <canvas id="frostLayer"></canvas>
+  <div id="startScreen">
+    <div class="intro">
+      <div class="eyebrow">a little experiment in presence</div>
+      <h1>fog</h1>
+      <p class="subtitle">A mirror, a breath, and a fingertip.<br>Leave a trace. Then let yourself back in.</p>
+      <button id="startButton" type="button">Enter the mirror</button>
+      <p id="privacy">Camera and microphone stay on this device.<br>Nothing is recorded, uploaded, or sent anywhere.</p>
+      <p id="status" role="status" aria-live="polite"></p>
+    </div>
+  </div>
+  <div id="controls">
+    <div id="brushControl">
+      <label for="brushSize">brush</label>
+      <input id="brushSize" type="range" min="7" max="38" value="15" step="1">
+    </div>
+    <button id="shutter" type="button" aria-label="Save mirror image" title="Save PNG">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M4 8.5h3l1.5-2h7l1.5 2h3v10H4z"/><circle cx="12" cy="13.5" r="3.5"/></svg>
+    </button>
+    <div id="hint">SPACE breathe · C clear · S save · ESC exit</div>
+  </div>
+</div>
+
+<script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands@0.4.1675469240/hands.js" crossorigin="anonymous"></script>
+<script src="https://cdn.jsdelivr.net/npm/@mediapipe/face_detection@0.4.1646425229/face_detection.js" crossorigin="anonymous"></script>
+<script>
+'use strict';
+
+const video = document.getElementById('video');
+const cameraCanvas = document.getElementById('cameraLayer');
+const frostCanvas = document.getElementById('frostLayer');
+const cameraCtx = cameraCanvas.getContext('2d', { alpha: false });
+const frostCtx = frostCanvas.getContext('2d');
+const fogCanvas = document.createElement('canvas');
+const fogCtx = fogCanvas.getContext('2d');
+const startScreen = document.getElementById('startScreen');
+const startButton = document.getElementById('startButton');
+const statusEl = document.getElementById('status');
+const controls = document.getElementById('controls');
+const brushSlider = document.getElementById('brushSize');
+const shutter = document.getElementById('shutter');
+
+let stream = null;
+let hands = null;
+let faceDetection = null;
+let analyser = null;
+let audioContext = null;
+let micData = null;
+let rafId = 0;
+let frameNo = 0;
+let handsBusy = false;
+let faceBusy = false;
+let lastHands = null;
+let lastFace = null;
+let fogFloor = 0.004;
+let fogCenter = { x: 0.5, y: 0.59 };
+let rawPen = null;
+let smoothPen = null;
+let brushPen = null;
+let starPoint = null;
+let penDown = false;
+let fistWasActive = false;
+let fistPoint = null;
+let fistLastStamp = null;
+let missingSince = 0;
+let releasedFrames = 0;
+let lastKeyAt = 0;
+let spaceHeld = false;
+let brushRadiusCss = 15;
+let dpr = 1;
+let cssWidth = 0;
+let cssHeight = 0;
+let running = false;
+let startFogInitialized = false;
+
+function resizeCanvases() {
+  dpr = Math.min(window.devicePixelRatio || 1, 2);
+  cssWidth = window.innerWidth;
+  cssHeight = window.innerHeight;
+  const width = Math.round(cssWidth * dpr);
+  const height = Math.round(cssHeight * dpr);
+  for (const canvas of [cameraCanvas, frostCanvas, fogCanvas]) {
+    canvas.width = width;
+    canvas.height = height;
+  }
+  cameraCtx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  frostCtx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  fogCtx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  if (startFogInitialized) seedFog();
+}
+window.addEventListener('resize', resizeCanvases);
+resizeCanvases();
+
+function seedFog() {
+  fogCtx.save();
+  fogCtx.globalCompositeOperation = 'source-over';
+  fogCtx.clearRect(0, 0, cssWidth, cssHeight);
+  fogCtx.fillStyle = 'rgba(255,255,255,0.55)';
+  fogCtx.fillRect(0, 0, cssWidth, cssHeight);
+  fogCtx.restore();
+  startFogInitialized = true;
+}
+
+function clearFog() {
+  fogCtx.save();
+  fogCtx.globalCompositeOperation = 'source-over';
+  fogCtx.clearRect(0, 0, cssWidth, cssHeight);
+  fogCtx.restore();
+}
+
+function normalizedPoint(landmark) {
+  return { x: (1 - landmark.x) * cssWidth, y: landmark.y * cssHeight };
+}
+function distance(a, b) { return Math.hypot(a.x - b.x, a.y - b.y); }
+function midpoint(a, b) { return { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 }; }
+function easePoint(from, to, amount) {
+  if (!from) return { x: to.x, y: to.y };
+  return { x: from.x + (to.x - from.x) * amount, y: from.y + (to.y - from.y) * amount };
+}
+
+function eraseSoft(x, y, radius, strength) {
+  const gradient = fogCtx.createRadialGradient(x, y, radius * 0.08, x, y, radius);
+  gradient.addColorStop(0, `rgba(0,0,0,${strength})`);
+  gradient.addColorStop(0.68, `rgba(0,0,0,${strength * 0.72})`);
+  gradient.addColorStop(1, 'rgba(0,0,0,0)');
+  fogCtx.save();
+  fogCtx.globalCompositeOperation = 'destination-out';
+  fogCtx.fillStyle = gradient;
+  fogCtx.beginPath();
+  fogCtx.arc(x, y, radius, 0, Math.PI * 2);
+  fogCtx.fill();
+  fogCtx.restore();
+}
+
+function addBreath(strength) {
+  const shortEdge = Math.min(cssWidth, cssHeight);
+  const reach = shortEdge * 0.43;
+  const centerX = fogCenter.x;
+  const centerY = fogCenter.y;
+  for (let i = 0; i < 12; i++) {
+    const angle = Math.random() * Math.PI * 2;
+    const radial = Math.sqrt(Math.random()) * reach;
+    const x = centerX + Math.cos(angle) * radial * 1.45;
+    const y = centerY + Math.sin(angle) * radial + radial * 0.16;
+    const radius = shortEdge * (0.035 + Math.random() * 0.075) * Math.min(1, strength + 0.22);
+    const blur = radius * 0.60;
+    const gradient = fogCtx.createRadialGradient(x, y, radius * 0.08, x, y, radius + blur);
+    gradient.addColorStop(0, 'rgba(255,255,255,0.36)');
+    gradient.addColorStop(0.55, 'rgba(255,255,255,0.22)');
+    gradient.addColorStop(1, 'rgba(255,255,255,0)');
+    fogCtx.save();
+    fogCtx.globalCompositeOperation = 'source-over';
+    fogCtx.fillStyle = gradient;
+    fogCtx.beginPath();
+    fogCtx.arc(x, y, radius + blur, 0, Math.PI * 2);
+    fogCtx.fill();
+    fogCtx.restore();
+  }
+}
+
+function measureMicLevel() {
+  if (!analyser || !micData) return 0;
+  analyser.getByteTimeDomainData(micData);
+  let peak = 0;
+  for (let i = 0; i < micData.length; i++) {
+    peak = Math.max(peak, Math.abs((micData[i] - 128) / 128));
+  }
+  return peak;
+}
+
+function getHandState(landmarks) {
+  const p = landmarks.map(normalizedPoint);
+  const wrist = p[0];
+  const indexMcp = p[5], middleMcp = p[9], pinkyMcp = p[17];
+  const thumbTip = p[4], indexTip = p[8];
+  const handScale = Math.max(distance(wrist, middleMcp), 1);
+  const pinchRatio = distance(thumbTip, indexTip) / handScale;
+  const indexExtended = distance(indexTip, wrist) > distance(p[6], wrist) * 1.08;
+  const fingerPairs = [[8,6],[12,10],[16,14],[20,18]];
+  const curledCount = fingerPairs.filter(([tip, joint]) => distance(p[tip], wrist) < distance(p[joint], wrist)).length;
+  const fist = curledCount === 4;
+  const width = Math.max(distance(indexMcp, pinkyMcp), distance(wrist, middleMcp));
+  return {
+    point: { x: indexTip.x * 0.35 + thumbTip.x * 0.65, y: indexTip.y * 0.35 + thumbTip.y * 0.65 },
+    pinchRatio, indexExtended, fist, width, landmarks: p
+  };
+}
+
+function handleHandResults(results) {
+  if (!results.multiHandLandmarks || results.multiHandLandmarks.length === 0) {
+    lastHands = null;
+    return;
+  }
+  lastHands = getHandState(results.multiHandLandmarks[0]);
+}
+
+function drawPen(point) {
+  if (!brushPen) {
+    brushPen = { ...point };
+    return;
+  }
+  const next = easePoint(brushPen, point, 0.22);
+  const movement = distance(brushPen, next);
+  if (movement < cssWidth * 0.0006) {
+    brushPen = next;
+    return;
+  }
+  const previousMid = midpoint(brushPen, next);
+  fogCtx.save();
+  fogCtx.globalCompositeOperation = 'destination-out';
+  fogCtx.strokeStyle = 'rgba(0,0,0,1)';
+  fogCtx.lineWidth = brushRadiusCss * 2;
+  fogCtx.lineCap = 'round';
+  fogCtx.lineJoin = 'round';
+  fogCtx.beginPath();
+  fogCtx.moveTo(brushPen.x, brushPen.y);
+  fogCtx.quadraticCurveTo(brushPen.x, brushPen.y, previousMid.x, previousMid.y);
+  fogCtx.stroke();
+  fogCtx.beginPath();
+  fogCtx.arc(next.x, next.y, brushRadiusCss, 0, Math.PI * 2);
+  fogCtx.fillStyle = 'rgba(0,0,0,1)';
+  fogCtx.fill();
+  fogCtx.restore();
+  brushPen = next;
+}
+
+function handleFist(state) {
+  const point = state.point;
+  const radius = state.width * 1.6;
+  if (!fistWasActive || !fistLastStamp) {
+    eraseSoft(point.x, point.y, radius, 0.34);
+    fistLastStamp = { ...point };
+  } else {
+    const moved = distance(fistLastStamp, point);
+    if (moved > Math.min(cssWidth, cssHeight) * 0.30) {
+      eraseSoft(point.x, point.y, radius, 0.34);
+    } else {
+      const spacing = Math.max(radius * 0.5, 1);
+      const stamps = Math.min(40, Math.floor(moved / spacing));
+      for (let i = 1; i <= stamps; i++) {
+        const t = Math.min(1, (i * spacing) / moved);
+        eraseSoft(fistLastStamp.x + (point.x - fistLastStamp.x) * t,
+                  fistLastStamp.y + (point.y - fistLastStamp.y) * t, radius, 0.34);
+      }
+    }
+    fistLastStamp = { ...point };
+  }
+  fistWasActive = true;
+}
+
+function updateGestures(now) {
+  if (!lastHands) {
+    if (penDown) {
+      if (!missingSince) missingSince = now;
+      if (now - missingSince > 250) {
+        releasedFrames++;
+        if (releasedFrames >= 2) {
+          penDown = false; rawPen = null; smoothPen = null; brushPen = null; starPoint = null;
+        }
+      }
+    }
+    fistWasActive = false;
+    fistLastStamp = null;
+    return;
+  }
+  missingSince = 0;
+  releasedFrames = 0;
+  const state = lastHands;
+  if (state.fist) {
+    penDown = false;
+    rawPen = null; smoothPen = null; brushPen = null;
+    handleFist(state);
+    starPoint = null;
+    return;
+  }
+  fistWasActive = false;
+  fistLastStamp = null;
+  const ratio = state.pinchRatio;
+  if (ratio < 0.22 && !penDown && state.indexExtended) {
+    penDown = true;
+    rawPen = { ...state.point };
+    smoothPen = { ...state.point };
+    brushPen = { ...state.point };
+    starPoint = { ...state.point };
+  } else if (ratio > 0.38) {
+    penDown = false;
+    rawPen = null; smoothPen = null; brushPen = null;
+  }
+  if (penDown) {
+    rawPen = easePoint(rawPen, state.point, 0.45);
+    smoothPen = rawPen;
+    drawPen(smoothPen);
+    starPoint = easePoint(starPoint, state.point, 0.55);
+  }
+}
+
+function drawStar() {
+  if (!starPoint) return;
+  const x = starPoint.x, y = starPoint.y, r = 4.5;
+  frostCtx.save();
+  frostCtx.globalCompositeOperation = 'source-over';
+  frostCtx.shadowColor = 'rgba(255,255,255,.95)';
+  frostCtx.shadowBlur = 13;
+  frostCtx.fillStyle = 'rgba(255,255,255,.95)';
+  frostCtx.beginPath();
+  frostCtx.moveTo(x, y-r*1.8); frostCtx.lineTo(x+r*.38,y-r*.38);
+  frostCtx.lineTo(x+r*1.8,y); frostCtx.lineTo(x+r*.38,y+r*.38);
+  frostCtx.lineTo(x,y+r*1.8); frostCtx.lineTo(x-r*.38,y+r*.38);
+  frostCtx.lineTo(x-r*1.8,y); frostCtx.lineTo(x-r*.38,y-r*.38);
+  frostCtx.closePath(); frostCtx.fill();
+  frostCtx.restore();
+}
+
+function render() {
+  if (!running) return;
+  frameNo++;
+  const width = cssWidth, height = cssHeight;
+  cameraCtx.save();
+  cameraCtx.clearRect(0, 0, width, height);
+  cameraCtx.translate(width, 0);
+  cameraCtx.scale(-1, 1);
+  if (video.readyState >= 2) {
+    const videoRatio = video.videoWidth / video.videoHeight;
+    const canvasRatio = width / height;
+    let drawW, drawH, dx, dy;
+    if (videoRatio > canvasRatio) { drawH = height; drawW = height * videoRatio; dx = (width - drawW) / 2; dy = 0; }
+    else { drawW = width; drawH = width / videoRatio; dx = 0; dy = (height - drawH) / 2; }
+    cameraCtx.drawImage(video, dx, dy, drawW, drawH);
+  }
+  cameraCtx.restore();
+
+  if (frameNo % 5 === 0 && faceDetection && !faceBusy && video.readyState >= 2) {
+    faceBusy = true;
+    faceDetection.send({ image: video }).then(() => {}).finally(() => { faceBusy = false; });
+  }
+  if (lastFace && lastFace.locationData && lastFace.locationData.relativeBoundingBox) {
+    const b = lastFace.locationData.relativeBoundingBox;
+    const target = { x: (1 - (b.xCenter || b.xMin + b.width / 2)) * width, y: (b.yMin + b.height * 0.73) * height };
+    fogCenter = easePoint(fogCenter, target, 0.4);
+  }
+
+  updateGestures(performance.now());
+
+  const level = measureMicLevel();
+  if (level < fogFloor) fogFloor += (level - fogFloor) * 0.05;
+  else fogFloor += (level - fogFloor) * 0.0008;
+  const breathStrength = Math.max(0, Math.min(1, (level - (fogFloor + 0.0025)) / 0.0005));
+  if (!penDown && !fistWasActive && nowSafeForBreath() && (spaceHeld || breathStrength > 0) && frameNo % 2 === 0) {
+    addBreath(spaceHeld ? 1 : breathStrength);
+  }
+
+  frostCtx.save();
+  frostCtx.clearRect(0, 0, width, height);
+  frostCtx.filter = `blur(${18 * dpr}px) brightness(1.18)`;
+  frostCtx.drawImage(cameraCanvas, 0, 0, width, height);
+  frostCtx.filter = 'none';
+  frostCtx.fillStyle = 'rgba(242,238,231,0.62)';
+  frostCtx.fillRect(0, 0, width, height);
+  frostCtx.globalCompositeOperation = 'destination-in';
+  frostCtx.drawImage(fogCanvas, 0, 0, width, height);
+  frostCtx.globalCompositeOperation = 'source-over';
+  drawStar();
+  frostCtx.restore();
+
+  if (!handsBusy && hands && video.readyState >= 2) {
+    handsBusy = true;
+    hands.send({ image: video }).then(() => {}).finally(() => { handsBusy = false; });
+  }
+  rafId = requestAnimationFrame(render);
+}
+
+function nowSafeForBreath() { return performance.now() - lastKeyAt > 300; }
+
+async function startMirror() {
+  statusEl.textContent = '';
+  startButton.disabled = true;
+  startButton.textContent = 'Opening mirror…';
+  if (!window.isSecureContext || !navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+    statusEl.textContent = 'Camera and microphone require HTTPS or localhost. Open this file from a secure origin.';
+    startButton.disabled = false; startButton.textContent = 'Try again';
+    return;
+  }
+  try {
+    stream = await navigator.mediaDevices.getUserMedia({
+      video: { width: { ideal: 1280 }, height: { ideal: 720 }, facingMode: 'user' },
+      audio: { echoCancellation: false, noiseSuppression: false, autoGainControl: false }
+    });
+    video.srcObject = stream;
+    await video.play();
+    audioContext = new (window.AudioContext || window.webkitAudioContext)();
+    const source = audioContext.createMediaStreamSource(stream);
+    analyser = audioContext.createAnalyser();
+    analyser.fftSize = 1024;
+    source.connect(analyser);
+    micData = new Uint8Array(analyser.fftSize);
+
+    hands = new Hands({ locateFile: file => `https://cdn.jsdelivr.net/npm/@mediapipe/hands@0.4.1675469240/${file}` });
+    hands.setOptions({ maxNumHands: 1, modelComplexity: 1, minDetectionConfidence: 0.65, minTrackingConfidence: 0.6 });
+    hands.onResults(handleHandResults);
+
+    faceDetection = new FaceDetection({ locateFile: file => `https://cdn.jsdelivr.net/npm/@mediapipe/face_detection@0.4.1646425229/${file}` });
+    faceDetection.setOptions({ model: 'short', minDetectionConfidence: 0.55 });
+    faceDetection.onResults(results => { lastFace = results.detections && results.detections.length ? results.detections[0] : null; });
+
+    seedFog();
+    startScreen.style.display = 'none';
+    controls.style.display = 'block';
+    running = true;
+    rafId = requestAnimationFrame(render);
+  } catch (error) {
+    if (stream) { stream.getTracks().forEach(track => track.stop()); stream = null; }
+    statusEl.textContent = error && (error.name === 'NotAllowedError' || error.name === 'PermissionDeniedError')
+      ? 'Camera or microphone permission was denied.'
+      : `Unable to start the mirror: ${error.message || error}`;
+    startButton.disabled = false;
+    startButton.textContent = 'Try again';
+    throw error.name === 'NotAllowedError' || error.name === 'PermissionDeniedError' ? new Error('Camera or microphone permission was denied.') : error;
+  }
+}
+
+function saveImage() {
+  const output = document.createElement('canvas');
+  output.width = cameraCanvas.width;
+  output.height = cameraCanvas.height;
+  const ctx = output.getContext('2d');
+  ctx.drawImage(cameraCanvas, 0, 0);
+  ctx.drawImage(frostCanvas, 0, 0);
+  const link = document.createElement('a');
+  link.download = 'fog-mirror.png';
+  link.href = output.toDataURL('image/png');
+  link.click();
+}
+
+function exitMirror() {
+  running = false;
+  cancelAnimationFrame(rafId);
+  if (stream) stream.getTracks().forEach(track => track.stop());
+  stream = null;
+  if (audioContext) audioContext.close();
+  audioContext = null; analyser = null; micData = null;
+  if (hands) hands.close();
+  if (faceDetection) faceDetection.close();
+  hands = null; faceDetection = null;
+  lastHands = null; lastFace = null;
+  penDown = false; rawPen = null; smoothPen = null; brushPen = null; starPoint = null;
+  startFogInitialized = false;
+  controls.style.display = 'none';
+  startScreen.style.display = 'grid';
+  startButton.disabled = false;
+  startButton.textContent = 'Enter the mirror';
+  statusEl.textContent = '';
+  cameraCtx.clearRect(0, 0, cssWidth, cssHeight);
+  frostCtx.clearRect(0, 0, cssWidth, cssHeight);
+}
+
+startButton.addEventListener('click', startMirror);
+brushSlider.addEventListener('input', () => { brushRadiusCss = Number(brushSlider.value); });
+shutter.addEventListener('click', saveImage);
+window.addEventListener('keydown', event => {
+  lastKeyAt = performance.now();
+  if (event.code === 'Space' && running) { event.preventDefault(); spaceHeld = true; }
+  if (!running) return;
+  if (event.key.toLowerCase() === 'c') clearFog();
+  if (event.key.toLowerCase() === 's') saveImage();
+  if (event.key === 'Escape') exitMirror();
+});
+window.addEventListener('keyup', event => {
+  if (event.code === 'Space') spaceHeld = false;
+});
+window.addEventListener('blur', () => { spaceHeld = false; });
+</script>
+</body>
+</html>
